@@ -1,6 +1,6 @@
 {
   "name": "shopify-admin-client",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Schlanker, dependency-freier Shopify Admin GraphQL-Client (Client-Credentials-Grant, Token-Caching, Retry + Rate-Limit-Handling).",
   "type": "module",
   "main": "index.js",
@@ -12,6 +12,9 @@
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
   "engines": {
     "node": ">=18"
   },
