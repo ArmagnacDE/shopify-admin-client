@@ -66,33 +66,47 @@ export function scanClientBoundary({
   if (!Array.isArray(rootDirs) || rootDirs.length === 0) {
     throw new Error("scanClientBoundary: rootDirs muss ein nicht-leeres Array sein.");
   }
-  // Pfade normalisieren (Windows-Backslashes → /), damit Vergleiche stabil sind.
-  const norm = (p) => p.replace(/\\/g, "/");
+  // Pfade normalisieren (Windows-Backslashes → /, führendes ./ strippen), damit
+  // allowClientIn/ignore stabil gegen den gescannten Pfad (aus join(), ./-kollabiert)
+  // vergleichen — sonst wäre `allowClientIn: ['./lib/shopify.js']` ein Falsch-Positiv.
+  const norm = (p) => p.replace(/\\/g, "/").replace(/^\.\//, "");
   const erlaubt = new Set(allowClientIn.map(norm));
   const ignorePraefixe = ignore.map(norm);
   const istIgnoriert = (p) => ignorePraefixe.some((pre) => p === pre || p.startsWith(pre));
+
+  // Über den GESAMTEN Dateiinhalt scannen (nicht zeilenweise): so werden auch von
+  // Formatiern zeilengebrochene Importe (`from`/`import(` mit dem Paketstring auf der
+  // Folgezeile) erkannt — die \s in den Mustern überspannen Zeilenumbrüche. Die
+  // Fundzeile wird aus dem Match-Offset berechnet.
+  const zeileVon = (text, index) => text.slice(0, index).split("\n").length;
+  const scanne = (text, muster, aktiv, mach) => {
+    if (!aktiv) return;
+    const g = new RegExp(muster.source, muster.flags.includes("g") ? muster.flags : `${muster.flags}g`);
+    let m;
+    while ((m = g.exec(text)) !== null) {
+      befunde.push(mach(zeileVon(text, m.index)));
+      if (m.index === g.lastIndex) g.lastIndex++; // Schutz gegen Null-Längen-Match
+    }
+  };
 
   const befunde = [];
   for (const root of rootDirs) {
     for (const pfad of dateienUnter(root)) {
       const rel = norm(pfad);
       if (istIgnoriert(rel)) continue;
-      const zeilen = readFileSync(pfad, "utf8").split("\n");
-      zeilen.forEach((zeile, idx) => {
-        const nr = idx + 1;
-        if (CLIENT_IMPORT_RE.test(zeile) && !erlaubt.has(rel)) {
-          befunde.push({ file: rel, line: nr, rule: "client-import",
-            detail: "Import von shopify-admin-client außerhalb der erlaubten Adapter-Dateien." });
-        }
-        if (forbidRawFetch && RAW_FETCH_RE.test(zeile)) {
-          befunde.push({ file: rel, line: nr, rule: "raw-fetch",
-            detail: "Roh-fetch gegen myshopify.com — Writes gehören über den zentralen Client/Guard." });
-        }
-        if (forbidClientFromEnv && CLIENT_FROM_ENV_RE.test(zeile)) {
-          befunde.push({ file: rel, line: nr, rule: "client-from-env",
-            detail: "clientFromEnv ist ungeguardet (liest _STORE aus der Env) — Registry mit expectedDomain nutzen." });
-        }
-      });
+      const inhalt = readFileSync(pfad, "utf8");
+      scanne(inhalt, CLIENT_IMPORT_RE, !erlaubt.has(rel), (line) => ({
+        file: rel, line, rule: "client-import",
+        detail: "Import von shopify-admin-client außerhalb der erlaubten Adapter-Dateien.",
+      }));
+      scanne(inhalt, RAW_FETCH_RE, forbidRawFetch, (line) => ({
+        file: rel, line, rule: "raw-fetch",
+        detail: "Roh-fetch gegen myshopify.com — Writes gehören über den zentralen Client/Guard.",
+      }));
+      scanne(inhalt, CLIENT_FROM_ENV_RE, forbidClientFromEnv, (line) => ({
+        file: rel, line, rule: "client-from-env",
+        detail: "clientFromEnv ist ungeguardet (liest _STORE aus der Env) — Registry mit expectedDomain nutzen.",
+      }));
     }
   }
   return befunde;

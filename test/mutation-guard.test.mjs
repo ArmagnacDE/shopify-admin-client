@@ -112,6 +112,15 @@ test("Identität wird pro Instanz genau einmal abgefragt; Reads lösen keine aus
   assert.equal(calls.filter((c) => c.q === IDENTITAET).length, 1, "Identity-Query nicht gecacht");
 });
 
+test("Identitäts-Ablehnung bleibt gecacht — zweiter Write löst KEINE zweite Abfrage aus", async () => {
+  const { guard, calls } = bauGuard({ live: "wagemut-b2c.myshopify.com" });
+  guard.declareMutations({ felder: ["productSet"], budget: 5, grund: "x" });
+  await assert.rejects(() => guard.graphql(M_PRODUCT_SET, {}), (e) => e.code === "store");
+  await assert.rejects(() => guard.graphql(M_PRODUCT_SET, {}), (e) => e.code === "store");
+  assert.equal(calls.filter((c) => c.q === IDENTITAET).length, 1,
+    "Ablehnung nicht gecacht — zweite Identitätsabfrage (kein In-Prozess-Retry erlaubt)");
+});
+
 test("Single-Flight: parallele erste Writes lösen genau EINE Identitätsabfrage aus", async () => {
   const { guard, calls } = bauGuard();
   guard.declareMutations({ felder: ["productSet"], budget: 5, grund: "Test" });

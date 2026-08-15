@@ -76,6 +76,10 @@ export function createJsonlAudit({
     if (transformVariables && Object.hasOwn(e, "variablen")) {
       e.variablen = transformVariables(e.variablen);
     }
+    // Kürzung über den GESAMTEN Eintrag (Default-Mechanik, NACH transformVariables).
+    // Nebeneffekt: der Wrapper {ts,pid,typ,…} kostet die verschachtelten Werte eine
+    // Tiefen-Ebene (effektiv TIEFE_MAX-1 für `variablen`) — bewusst in Kauf genommen;
+    // echte GraphQL-Inputs liegen bei ~4–6 Ebenen, das Limit greift dort nie.
     const voll = kuerzeFuerLog({ ts: now().toISOString(), pid, typ, ...e });
     if (!verzeichnisBereit) {
       mkdir(directory, { recursive: true });

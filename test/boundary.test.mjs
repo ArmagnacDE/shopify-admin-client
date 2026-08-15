@@ -110,6 +110,32 @@ test("längerer Paketname (shopify-admin-client-extra) ist KEIN Fund", (t) => {
   assert.deepEqual(befunde.filter((b) => b.rule === "client-import"), []);
 });
 
+test("zeilengebrochene Importe werden erkannt (Ganzdatei-Scan)", (t) => {
+  const root = fixture({
+    "scripts/broken-from.js": 'import {\n  createShopifyClient,\n}\n  from "shopify-admin-client";\n',
+    "scripts/broken-dyn.js": 'const m = await import(\n  "shopify-admin-client/guard"\n);\n',
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const befunde = scanClientBoundary({ rootDirs: [join(root, "scripts")] });
+  const files = befunde.filter((b) => b.rule === "client-import").map((b) => b.file);
+  assert.equal(files.length, 2, "beide zeilengebrochenen Importe müssen gemeldet werden");
+  assert.ok(files.some((f) => /broken-from/.test(f)));
+  assert.ok(files.some((f) => /broken-dyn/.test(f)));
+});
+
+test("allowClientIn mit ./-Präfix ist KEIN Falsch-Positiv", (t) => {
+  const root = fixture({
+    "lib/shopify.js": 'import { createStoreRegistry } from "shopify-admin-client/registry";\n',
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const rel = join(root, "lib/shopify.js").replace(/\\/g, "/");
+  const befunde = scanClientBoundary({
+    rootDirs: [join(root, "lib")],
+    allowClientIn: [`./${rel}`], // Aufrufer schreibt die Allowlist mit ./-Präfix
+  });
+  assert.deepEqual(befunde, [], "erlaubte Datei darf trotz ./-Präfix nicht gemeldet werden");
+});
+
 test("rootDirs Pflicht", () => {
   assert.throws(() => scanClientBoundary({ rootDirs: [] }), /rootDirs/);
   assert.throws(() => scanClientBoundary({}), /rootDirs/);
