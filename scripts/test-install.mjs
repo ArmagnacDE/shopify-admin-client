@@ -58,19 +58,23 @@ try {
     'import assert from "node:assert/strict";',
     'import * as root from "shopify-admin-client";',
     'import * as registry from "shopify-admin-client/registry";',
+    'import * as guard from "shopify-admin-client/guard";',
     "const expected = [",
     '  "createShopifyClient", "clientFromEnv", "isMutation",',
-    '  "verifyShopIdentity", "createStoreRegistry", "MutationGuardError",',
+    '  "verifyShopIdentity", "createStoreRegistry", "createJsonlAudit",',
+    '  "scanClientBoundary", "MutationGuardError",',
     "];",
     "for (const n of expected)",
     '  assert.equal(typeof root[n], "function", "Barrel-Export fehlt: " + n);',
     'assert.equal(typeof registry.createStoreRegistry, "function", "Subpath ./registry fehlt createStoreRegistry");',
-    'console.log("  Root + ./registry importierbar, Exporte vollstaendig");',
+    "for (const n of [\"createMutationGuard\", \"extrahiereRootFeld\", \"istSchreibDokument\", \"validateDeclaration\", \"MutationGuardError\"])",
+    '  assert.equal(typeof guard[n], "function", "Subpath ./guard fehlt: " + n);',
+    'console.log("  Root + ./registry + ./guard importierbar, Exporte vollstaendig");',
   ].join("\n");
   writeFileSync(join(tmp, "probe.mjs"), probe);
   run("node", ["probe.mjs"], tmp);
 
-  console.log(`OK test:install — ${tarball} liefert Root + ./registry aus.`);
+  console.log(`OK test:install — ${tarball} liefert Root + ./registry + ./guard aus.`);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
   rmSync(tarballPath, { force: true });

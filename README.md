@@ -58,7 +58,7 @@ irgendein Request mit Seiteneffekt läuft.
 
 ```js
 import { createStoreRegistry } from "shopify-admin-client/registry";
-import { createJsonlAudit } from "shopify-admin-client"; // ab S2
+import { createJsonlAudit } from "shopify-admin-client";
 
 const registry = createStoreRegistry({
   stores: {
@@ -69,10 +69,15 @@ const registry = createStoreRegistry({
   // env: process.env (Default); fetch?: injizierbar (Tests) — bis in den Transport, zur Aufrufzeit aufgelöst
 });
 
-const b2c = registry.get("b2c");           // Handle, memoisiert je Name + Registry-Instanz
-const data = await b2c.graphql(`query { shop { name } }`);
-await b2c.verifyIdentity();                 // Live-Prüfung shop.myshopifyDomain gegen expectedDomain
+const b2c = registry.get("b2c");            // Handle, memoisiert je Name + Registry-Instanz
+b2c.declareMutations({ felder: ["productUpdate"], budget: 20, grund: "Preis-Sync" });
+const data = await b2c.graphql(`query { shop { name } }`);   // Read: direkt, ungeguardet
+await b2c.graphql(mutation, vars);          // Write: Guard prüft Form → Identität → Bulk → Deny → Budget
 ```
+
+**Store-Handle** (`registry.get(name)`): `{ graphql, declareMutations, isDeclared,
+verifyIdentity, config, state }`. `graphql` ist der **geguardete** Aufruf (Reads direkt,
+Writes vor dem ersten Send geprüft); `config = { store, version, endpoint, label }`.
 
 - **Lazy:** Struktur (Namen, Domains, Präfixe, `version`) wird **beim Bau** geprüft
   (unbekannte Namen / doppelte Domains oder Präfixe / fehlende `version` werfen sofort);
@@ -81,12 +86,54 @@ await b2c.verifyIdentity();                 // Live-Prüfung shop.myshopifyDomai
 - **`version` ist Pflicht je Store** — eine Code-Konstante wie die Domain. Ohne Pin fiele
   die API-Version still auf den Client-Default zurück.
 - **`get(name)` ist memoisiert** (ein Handle je Name und Registry-Instanz); ein
-  gescheitertes `get` (fehlende Credentials) wird **nicht** gecacht.
+  gescheitertes `get` (fehlende Credentials) wird **nicht** gecacht. `auditForStore` wird
+  genau **einmal je Name** aufgerufen.
+- **Instanzbasiert:** Deklaration, Budget und Identitäts-Cache hängen je Store-Handle — ein
+  Prozess kann B2C und B2B unabhängig berühren, ohne dass ihre Guards sich vermischen.
 
-> **Hinweis (S1):** In dieser Version ist `handle.graphql` noch der rohe Transport. Der
-> Mutation-Guard (Writes vor dem ersten Send geguardet, `declareMutations`, Audit über
-> `auditForStore`) kommt in S2 unter demselben Tag **v1.2.0** — es wird kein
-> ungeguardeter Zwischenstand getaggt/veröffentlicht.
+## Mutation-Guard & Audit (`shopify-admin-client/guard`)
+
+Der Registry-Handle legt je Store einen **Default-Deny-Guard** vor den Transport. Kein
+Write ohne vorherige Code-Deklaration; der Guard entscheidet nicht, was „gut" ist, er
+erzwingt, dass die Absicht als exaktes Token im Code steht, BEVOR etwas wirkt.
+
+- **Deklaration:** `declareMutations({ felder, budget, grund })` — einmal pro Instanz, vor
+  dem ersten Write. Fehlt sie / ist das Feld nicht deklariert / ist das Budget erschöpft →
+  `MutationGuardError` (`deny` / `budget`), **nichts gesendet**.
+- **Prüfreihenfolge je Write:** Form (kanonisch: mutation-first, genau ein Root-Feld) →
+  Identität (`verifyShopIdentity`, einmal je Instanz gecacht) → Bulk
+  (`bulkOperationRunMutation` gesperrt) → Deny → Budget. Reads laufen unberührt durch.
+- **Audit-Vertrag** (`createJsonlAudit` oder eigene Implementierung): `declared`, `attempt`,
+  `result`, `rejected` — alle **synchron**; `location()` = aktuelle Monatsdatei. `attempt`
+  läuft VOR dem Send und **wirft** bei Schreibfehler (fail-closed → `MutationGuardError('log')`,
+  kein Budget verbraucht); `declared/result/rejected` warnen selbst und werfen nie (nach
+  erfolgreichem Send darf kein Audit-Fehler als „Write gescheitert" beim Aufrufer landen —
+  Dubletten-Schutz). Jeder Eintrag trägt `store: expectedDomain`.
+- **Datenschutz:** `createJsonlAudit({ directory, transformVariables? })` — der
+  Datenschutz-Transform ist lokale Firmen-Entscheidung und sieht **nur** `variablen`; die
+  Feldkürzung (800 Zeichen, Tiefenlimit) darüber ist Default und läuft NACH dem Transform.
+  Das Log bleibt lokal und gitignored.
+
+```js
+import { createMutationGuard, extrahiereRootFeld, istSchreibDokument, validateDeclaration } from "shopify-admin-client/guard";
+// createMutationGuard({ graphql, expectedDomain, audit, id? }) — die Registry ruft das für dich.
+```
+
+## Boundary-Scan (`scanClientBoundary`)
+
+Der generische Teil des Firmen-Meta-Tests: hält ein Repo an der Anbindungs-Grenze.
+
+```js
+import { scanClientBoundary } from "shopify-admin-client";
+const befunde = scanClientBoundary({
+  rootDirs: ["lib", "scripts"],
+  allowClientIn: ["lib/shopify.js"],   // nur hier darf der Client importiert werden
+  ignore: ["scripts/spike/"],           // Pfadpräfixe komplett überspringen
+});                                      // [] = sauber; sonst { file, line, rule, detail }
+```
+
+Meldet: Import von `shopify-admin-client` (statisch **und** dynamisch, alle Subpaths)
+außerhalb `allowClientIn`; Roh-`fetch` gegen `myshopify.com`; Nutzung von `clientFromEnv`.
 
 ## Identitätsprüfung (`verifyShopIdentity`)
 
@@ -149,14 +196,25 @@ hält die gecachte Single-Flight-Promise.
 - `verifyShopIdentity(graphql, { expectedDomain })` → `Promise<domain>` (roh; wirft
   `MutationGuardError` `identitaet` | `store`).
 - `createStoreRegistry({ stores, env?, auditForStore, fetch? })` → `{ get(name) }` (auch unter
-  dem Subpath `shopify-admin-client/registry`).
+  dem Subpath `shopify-admin-client/registry`). Handle: `{ graphql, declareMutations,
+  isDeclared, verifyIdentity, config, state }`.
+- `createJsonlAudit({ directory, transformVariables?, warn?, now?, pid?, append?, mkdir? })` →
+  `{ declared, attempt, result, rejected, location }` (Audit-Vertrag; alle synchron).
+- `scanClientBoundary({ rootDirs, allowClientIn?, ignore?, forbidRawFetch?, forbidClientFromEnv? })` →
+  Befunde `[{ file, line, rule, detail }]` (leer = sauber).
 - `isMutation(query)` → `boolean` (Hilfsfunktion, exportiert).
-- `MutationGuardError` — Fehlerklasse (Codes u. a. `identitaet`, `store`; Präfix
-  `[mutation-guard:<code>]`).
+- `MutationGuardError` — Fehlerklasse (Codes `declare | form | bulk | deny | budget | log |
+  identitaet | store | init`; Präfix `[mutation-guard:<code>]`).
 - `SHOPIFY_API_VERSION` (env) setzt die Default-API-Version von `createShopifyClient`
   (sonst `2025-10`). **Registry-Handles ignorieren das** — dort ist `version` je Store Pflicht.
 
-**Subpaths:** `.` (Wurzel oben), `./registry` (`createStoreRegistry`).
+**`shopify-admin-client/guard`:** `createMutationGuard({ graphql, expectedDomain, audit, id? })`
+→ `{ graphql, declareMutations, isDeclared, verifyIdentity, state }`; dazu die Lexer/Form-Helfer
+`istSchreibDokument`, `extrahiereRootFeld`, `ohneStringsUndKommentare`, `validateDeclaration`
+und `MutationGuardError`.
+
+**Subpaths:** `.` (Wurzel oben), `./registry` (`createStoreRegistry`), `./guard`
+(`createMutationGuard` + Lexer).
 
 ## Tests
 

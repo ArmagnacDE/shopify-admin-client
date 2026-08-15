@@ -8,14 +8,14 @@
 // werden erst bei get(name) gelesen (fehlend -> Error, KEIN Netz); Token-Tausch und alles
 // Weitere erst beim ersten graphql-Aufruf des Handles.
 //
-// STAND S1: get(name) liefert ein Handle auf Basis des Transports plus verifyIdentity.
-// Der Mutation-Guard (declareMutations/isDeclared/state, Writes vor dem ersten Send
-// geguardet) und der Audit-Verbrauch von `auditForStore` kommen in S2 — bis dahin ist
-// `graphql` der ROHE Transport (ungeguardet). Der Tag v1.2.0 entsteht erst NACH S2, es
-// wird also nie ein ungeguardeter Zwischenstand veroeffentlicht.
+// get(name) legt je Store den Mutation-Guard vor den Transport: `handle.graphql` ist
+// `guard.graphql` (Writes geguardet, Reads direkt, kein Read-Preflight); die Audit-Instanz
+// kommt aus `auditForStore(name, storeCfg)` (genau einmal je Name). Deklaration, Budget und
+// Identitaets-Cache haengen je Guard-Instanz — ein Prozess kann B2C und B2B unabhaengig
+// beruehren.
 
 import { createShopifyClient, STORE_RE } from "./transport.js";
-import { verifyShopIdentity } from "./identity.js";
+import { createMutationGuard } from "./mutation-guard.js";
 
 // Praefix wie eine Env-Variable: Grossbuchstabe zuerst, dann Grossbuchstaben/Ziffern/_.
 const PREFIX_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -28,11 +28,12 @@ const PREFIX_RE = /^[A-Z][A-Z0-9_]*$/;
  * @param {NodeJS.ProcessEnv} [opts.env]  Umgebung (Default process.env). Gelesen werden
  *        nur `<envPrefix>_CLIENT_ID` und `<envPrefix>_CLIENT_SECRET`.
  * @param {(name: string, storeCfg: object) => object} opts.auditForStore  Audit-Fabrik je
- *        Store (Pflicht). Der Guard (S2) ruft sie je Handle genau einmal; in S1 wird sie
- *        beim Bau als Funktion geprueft, aber noch nicht aufgerufen.
+ *        Store (Pflicht). get(name) ruft sie genau einmal je Name (Handle memoisiert) und
+ *        übergibt das Audit an den Guard.
  * @param {typeof fetch} [opts.fetch]  Transport injizierbar (bis in den Transport, zur
  *        Aufrufzeit aufgeloest) — fuer Tests/Fehlerbild-Test 1.
- * @returns {{ get: (name: string) => object }}
+ * @returns {{ get: (name: string) => object }}  get(name) → Store-Handle
+ *        { graphql, declareMutations, isDeclared, verifyIdentity, config, state }.
  */
 export function createStoreRegistry({ stores, env = process.env, auditForStore, fetch } = {}) {
   // --- Bauzeit-Pruefungen (kein Netz, keine Credentials) ------------------------------
@@ -139,22 +140,23 @@ export function createStoreRegistry({ stores, env = process.env, auditForStore, 
       fetch, // bis in den Transport durchgereicht (zur Aufrufzeit aufgeloest)
     });
 
-    // Ein Identitaets-Cache je Handle: Single-Flight, auch eine Ablehnung bleibt gecacht.
-    // (In S2 uebernimmt der Guard diesen Cache; bis dahin haelt das Handle ihn direkt.)
-    let identityPromise = null;
-    const verifyIdentity = () => {
-      if (!identityPromise) {
-        identityPromise = verifyShopIdentity(client.graphql, {
-          expectedDomain: cfg.expectedDomain,
-        });
-      }
-      return identityPromise;
-    };
+    // Audit-Instanz je Store (genau einmal je Name — get memoisiert das Handle).
+    const audit = auditForStore(name, cfg);
+    // Guard vor den Transport: Writes geguardet, Reads direkt. Identitaets-Cache,
+    // Deklaration und Budget haengen an dieser Guard-Instanz.
+    const guard = createMutationGuard({
+      graphql: client.graphql,
+      expectedDomain: cfg.expectedDomain,
+      audit,
+    });
 
     const handle = {
-      graphql: client.graphql, // S1: roher Transport; S2 legt den Guard davor
-      verifyIdentity,
+      graphql: guard.graphql, // geguardet (Reads direkt, Writes vor dem ersten Send geprueft)
+      declareMutations: guard.declareMutations,
+      isDeclared: guard.isDeclared,
+      verifyIdentity: guard.verifyIdentity, // der EINE Identitaets-Cache je Handle
       config: client.config, // { store, version, endpoint, label }
+      state: guard.state,
     };
 
     handles.set(name, handle); // nur bei Erfolg

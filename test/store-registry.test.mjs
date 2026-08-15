@@ -6,7 +6,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createStoreRegistry } from "../store-registry.js";
 
-const auditNoop = () => ({}); // S1: Pflicht-Funktion, vom Guard erst in S2 aufgerufen.
+// Gültige (No-op) Audit-Instanz — der Guard prüft beim Bau, dass attempt eine Funktion ist.
+const auditNoop = () => {
+  const noop = () => {};
+  return { declared: noop, attempt: noop, result: noop, rejected: noop, location: () => "logs/x.jsonl" };
+};
 
 function resp(body, { ok = true, status = 200 } = {}) {
   return {
@@ -98,6 +102,90 @@ test("Fehlerbild 1: vertauschte .env (fremde Credentials) -> 401, KEIN graphql-R
   // und danach folgte KEIN Request mit Seiteneffekt.
   assert.deepEqual(record.tokens.map((t) => [t.host, t.clientId]), [["shop-b.myshopify.com", "id-a"]]);
   assert.equal(record.graphql.length, 0, "nach gescheitertem Token-Tausch kein graphql.json-Request");
+});
+
+// ---------------------------------------------------------------------------------
+// Fehlerbild-Test 2 — Instanz-Leck (Guard je Store instanzbasiert)
+// ---------------------------------------------------------------------------------
+
+const STORES2 = {
+  b2c: { expectedDomain: "b2c.myshopify.com", envPrefix: "WM_B2C", version: "2026-04" },
+  b2b: { expectedDomain: "b2b.myshopify.com", envPrefix: "WM_B2B", version: "2026-04" },
+};
+const ENV2 = {
+  WM_B2C_CLIENT_ID: "idc", WM_B2C_CLIENT_SECRET: "sc",
+  WM_B2B_CLIENT_ID: "idb", WM_B2B_CLIENT_SECRET: "sb",
+};
+const M_UPDATE = "mutation U($i: ProductInput!) { productUpdate(input: $i) { product { id } } }";
+
+// Token immer ok; identity antwortet als der Host des Endpoints; sonst { ok: 1 }.
+function guardFetch(record) {
+  return async (url, options) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith("/access_token")) return resp({ access_token: "tok", expires_in: 86399 });
+    const body = JSON.parse(options.body);
+    record.push({ host: u.host, query: body.query });
+    if (/myshopifyDomain/.test(body.query)) return resp({ data: { shop: { myshopifyDomain: u.host } } });
+    return resp({ data: { ok: 1 } });
+  };
+}
+
+function spyAudit() {
+  const calls = [];
+  const entries = {};
+  const auditForStore = (name) => {
+    calls.push(name);
+    const list = [];
+    entries[name] = list;
+    const mk = (typ) => (e) => list.push({ typ, ...e });
+    return { declared: mk("declared"), attempt: mk("attempt"), result: mk("result"), rejected: mk("rejected"), location: () => `logs/${name}.jsonl` };
+  };
+  return { auditForStore, calls, entries };
+}
+
+test("Fehlerbild 2: getrennte Deklaration/Budget je Store; auditForStore 1x je Name; store je Eintrag", async () => {
+  const record = [];
+  const spy = spyAudit();
+  const reg = createStoreRegistry({ stores: STORES2, env: ENV2, auditForStore: spy.auditForStore, fetch: guardFetch(record) });
+
+  const b2c = reg.get("b2c");
+  const b2b = reg.get("b2b");
+  b2c.declareMutations({ felder: ["productUpdate"], budget: 5, grund: "Test" });
+  // b2b bewusst NICHT deklariert
+
+  await b2c.graphql(M_UPDATE, { i: {} });                       // erlaubt
+  await assert.rejects(() => b2b.graphql(M_UPDATE, { i: {} }),  // derselbe Write, andere Instanz
+    (e) => e.code === "deny");
+
+  assert.equal(b2c.state().zaehler, 1, "getrenntes Budget: b2c hat gezählt");
+  assert.equal(b2b.state().zaehler, 0, "getrenntes Budget: b2b hat nicht gezählt");
+  assert.equal(b2c.isDeclared(), true);
+  assert.equal(b2b.isDeclared(), false);
+
+  // Memoisierung + auditForStore genau einmal je Name.
+  assert.equal(reg.get("b2c"), b2c);
+  assert.equal(reg.get("b2b"), b2b);
+  assert.deepEqual([...spy.calls].sort(), ["b2b", "b2c"]);
+
+  // Jeder Audit-Eintrag trägt den richtigen store.
+  assert.ok(spy.entries.b2c.length > 0 && spy.entries.b2c.every((e) => e.store === "b2c.myshopify.com"));
+  assert.ok(spy.entries.b2b.length > 0 && spy.entries.b2b.every((e) => e.store === "b2b.myshopify.com"));
+});
+
+test("Fehlerbild 2: genau EINE Identitätsabfrage je Handle (auch parallele erste Writes); Reads lösen keine aus", async () => {
+  const record = [];
+  const spy = spyAudit();
+  const reg = createStoreRegistry({ stores: STORES2, env: ENV2, auditForStore: spy.auditForStore, fetch: guardFetch(record) });
+  const b2c = reg.get("b2c");
+  b2c.declareMutations({ felder: ["productUpdate"], budget: 5, grund: "Test" });
+
+  await b2c.graphql("query { shop { name } }"); // Read: keine Identität
+  const identityBisher = record.filter((r) => /myshopifyDomain/.test(r.query)).length;
+  assert.equal(identityBisher, 0, "Read hat eine Identitätsabfrage ausgelöst");
+
+  await Promise.all([b2c.graphql(M_UPDATE, { i: {} }), b2c.graphql(M_UPDATE, { i: {} })]);
+  const identityQueries = record.filter((r) => r.host === "b2c.myshopify.com" && /myshopifyDomain/.test(r.query)).length;
+  assert.equal(identityQueries, 1, "Single-Flight: genau eine Identitätsabfrage trotz paralleler erster Writes");
 });
 
 // ---------------------------------------------------------------------------------

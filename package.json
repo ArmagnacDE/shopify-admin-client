@@ -6,7 +6,8 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./registry": "./store-registry.js"
+    "./registry": "./store-registry.js",
+    "./guard": "./mutation-guard.js"
   },
   "files": [
     "index.js",
@@ -14,6 +15,9 @@
     "errors.js",
     "identity.js",
     "store-registry.js",
+    "mutation-guard.js",
+    "jsonl-audit.js",
+    "boundary.js",
     "README.md",
     "LICENSE"
   ],
