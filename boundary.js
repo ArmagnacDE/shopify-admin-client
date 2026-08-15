@@ -83,8 +83,11 @@ export function scanClientBoundary({
   // vergleichen — sonst wäre `allowClientIn: ['./lib/shopify.js']` ein Falsch-Positiv.
   const norm = (p) => p.replace(/\\/g, "/").replace(/^\.\//, "");
   const erlaubt = new Set(allowClientIn.map(norm));
-  const ignorePraefixe = ignore.map(norm);
-  const istIgnoriert = (p) => ignorePraefixe.some((pre) => p === pre || p.startsWith(pre));
+  // ignore = Pfad-Segmente, nicht Zeichen-Präfixe (Reviewer N6): 'scripts/spike' darf
+  // scripts/spike/… ausblenden, aber NICHT scripts/spike-x.js — ein Meta-Test ignoriert
+  // sonst in die Fail-open-Richtung. Ein abschließender '/' ist erlaubt und wirkungsgleich.
+  const ignorePraefixe = ignore.map((p) => norm(p).replace(/\/+$/, ""));
+  const istIgnoriert = (p) => ignorePraefixe.some((pre) => p === pre || p.startsWith(`${pre}/`));
 
   // Über den GESAMTEN Dateiinhalt scannen (nicht zeilenweise): so werden auch von
   // Formatiern zeilengebrochene Importe (`from`/`import(` mit dem Paketstring auf der

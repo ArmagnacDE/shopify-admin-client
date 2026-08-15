@@ -168,3 +168,16 @@ test("Roh-fetch-Formen: new URL(...), optional call, globalThis.fetch, mehrzeili
   const dateien = befunde.filter((b) => b.rule === "raw-fetch").map((b) => b.file.split("/").pop()).sort();
   assert.deepEqual(dateien, ["glob.js", "multi.js", "opt.js", "url.js"]);
 });
+
+test("ignore ist Pfad-Segment, kein Zeichen-Präfix: scripts/spike-x.js wird NICHT ignoriert (Reviewer N6)", (t) => {
+  const root = fixture({
+    "scripts/spike/dev.js": 'import { createShopifyClient } from "shopify-admin-client";\n',
+    "scripts/spike-x.js": 'import { createShopifyClient } from "shopify-admin-client";\n',
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const rel = (p) => join(root, p).replace(/\\/g, "/");
+  for (const ig of [rel("scripts/spike"), rel("scripts/spike/")]) {
+    const befunde = scanClientBoundary({ rootDirs: [join(root, "scripts")], ignore: [ig] });
+    assert.deepEqual(befunde.map((b) => b.file.split("/").pop()), ["spike-x.js"], `ignore=${ig}`);
+  }
+});

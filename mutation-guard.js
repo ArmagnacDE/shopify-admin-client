@@ -182,11 +182,19 @@ export function createMutationGuard({ graphql, expectedDomain, audit, id = rando
 
   const ort = () => (typeof audit.location === "function" ? audit.location() : null);
 
+  // Der Audit-Vertrag ist SYNCHRON. Eine async-Implementierung (naheliegend bei fs.promises
+  // oder einer wartenden Diff-Karte) würde den Vertrag still brechen: eine Rejection aus
+  // declared/result/rejected wäre eine unhandledRejection — Prozess-Exit 1 NACH einem
+  // erfolgreichen Send, Cron hält den Write für gescheitert und wiederholt (Dublette).
+  // Deshalb (Kadenz v1.2.0, Reviewer N1): thenable Rückgaben hier entschärfen.
+  const istThenable = (x) => x != null && typeof x.then === "function";
+  const entschaerfe = (r) => { if (istThenable(r)) r.then(null, () => { /* geschluckt */ }); };
+
   // Guard trägt `store` je Eintrag bei und schluckt Ausnahmen der nicht-fail-closed-
   // Methoden (Tiefenverteidigung). `attempt` NICHT hier — dessen Fehler ist fail-closed.
-  const auditDeclared = (e) => { try { audit.declared({ store: expectedDomain, ...e }); } catch { /* geschluckt */ } };
-  const auditResult = (e) => { try { audit.result({ store: expectedDomain, ...e }); } catch { /* geschluckt */ } };
-  const auditRejected = (grund, feld) => { try { audit.rejected({ store: expectedDomain, grund, feld: feld ?? null }); } catch { /* geschluckt */ } };
+  const auditDeclared = (e) => { try { entschaerfe(audit.declared({ store: expectedDomain, ...e })); } catch { /* geschluckt */ } };
+  const auditResult = (e) => { try { entschaerfe(audit.result({ store: expectedDomain, ...e })); } catch { /* geschluckt */ } };
+  const auditRejected = (grund, feld) => { try { entschaerfe(audit.rejected({ store: expectedDomain, grund, feld: feld ?? null })); } catch { /* geschluckt */ } };
 
   const verifyIdentity = () => {
     if (!identityPromise) identityPromise = verifyShopIdentity(graphql, { expectedDomain });
@@ -263,13 +271,25 @@ export function createMutationGuard({ graphql, expectedDomain, audit, id = rando
     // 6. attempt VOR dem Send (fail-closed) — und VOR dem Zählen: scheitert das Attempt-
     //    Log, wurde nichts gesendet, also kein Budget verbraucht, keine „letzte Operation".
     const korrId = id();
+    let attemptRueckgabe;
     try {
-      audit.attempt({ store: expectedDomain, id: korrId, feld, nr: zaehler + 1, variablen: variables });
+      attemptRueckgabe = audit.attempt({ store: expectedDomain, id: korrId, feld, nr: zaehler + 1, variablen: variables });
     } catch (e) {
       const logOrt = ort();
       throw new MutationGuardError("log",
         `Mutations-Log nicht schreibbar (${e?.message ?? e}) — Mutation NICHT gesendet.`
-        + (logOrt ? ` Log: ${logOrt}. Im Container muss das Log-Verzeichnis ein beschreibbares Volume sein.` : ""));
+        + (logOrt ? ` Log: ${logOrt}.` : "")
+        + " Typische Ursachen: Log-Verzeichnis im Container kein beschreibbares Volume, oder der"
+        + " Datenschutz-Transform (transformVariables) wirft bei diesem Variablen-Shape.");
+    }
+    // attempt MUSS synchron sein: eine Promise hieße, der Eintrag ist beim Send noch nicht
+    // geschrieben und ein späterer Fehler erreicht den Guard nie (fail-open). Fail-closed:
+    // nichts gesendet, kein Budget verbraucht (Reviewer N1).
+    if (istThenable(attemptRueckgabe)) {
+      entschaerfe(attemptRueckgabe);
+      throw new MutationGuardError("log",
+        "audit.attempt hat eine Promise zurückgegeben — der Audit-Vertrag ist SYNCHRON "
+        + "(attempt muss vor dem Send geschrieben haben oder werfen). Mutation NICHT gesendet.");
     }
     zaehler++;
     letzteOperation = feld;

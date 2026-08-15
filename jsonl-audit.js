@@ -30,6 +30,11 @@ export function kuerzeFuerLog(wert, max = FELD_MAX, tiefe = 0) {
     return wert.length > max ? `${wert.slice(0, max)}…[gekürzt ${wert.length} Zeichen]` : wert;
   }
   if (Array.isArray(wert)) return wert.map((v) => kuerzeFuerLog(v, max, tiefe + 1));
+  // Werte mit toJSON (Date, Buffer, URL …) so loggen, wie der Transport sie sendet
+  // (JSON.stringify ruft toJSON) — sonst stünde ein Date als `{}` im Log (Reviewer N3).
+  if (wert && typeof wert === "object" && typeof wert.toJSON === "function") {
+    return kuerzeFuerLog(wert.toJSON(), max, tiefe + 1);
+  }
   if (wert && typeof wert === "object") {
     return Object.fromEntries(Object.entries(wert).map(([k, v]) => [k, kuerzeFuerLog(v, max, tiefe + 1)]));
   }
@@ -90,7 +95,19 @@ export function createJsonlAudit({
         kopierbar = false;
         e.variablen = `[variablen nicht kopierbar — Transform uebersprungen: ${err?.message ?? err}]`;
       }
-      if (kopierbar) e.variablen = transformVariables(kopie);
+      if (kopierbar) {
+        try {
+          e.variablen = transformVariables(kopie);
+        } catch (err) {
+          // Klar benennen, WER geworfen hat (Reviewer N2): sonst liest der Aufrufer
+          // „Log nicht schreibbar" und sucht beim Volume statt beim Transform. Fail-closed
+          // bleibt: attempt propagiert, der Guard sendet nicht.
+          throw new Error(
+            `transformVariables hat geworfen (${err?.message ?? err}) — Eintrag nicht geschrieben. ` +
+              "Der Datenschutz-Transform muss jeden Variablen-Shape des Stores vertragen."
+          );
+        }
+      }
     }
     // Kürzung über den GESAMTEN Eintrag (Default-Mechanik, NACH transformVariables).
     // Nebeneffekt: der Wrapper {ts,pid,typ,…} kostet die verschachtelten Werte eine

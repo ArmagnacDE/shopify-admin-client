@@ -301,3 +301,44 @@ test("Block-String-Varianten im Lexer: Escape, verschachtelte Quotes, danach zä
   // Eine echte Mutation mit Block-String-Argument bleibt Write (und scheitert dann an der Form-Regel).
   assert.equal(istSchreibDokument('mutation { productUpdate(input: {descriptionHtml: """x"y"""}) { product { id } } }'), true);
 });
+
+// --- Kadenz v1.2.0 (Reviewer N1): der Audit-Vertrag ist SYNCHRON — async-Implementierungen
+// dürfen fail-closed und Dubletten-Schutz nicht still aushebeln.
+test("async attempt (Promise) → 'log', NICHT gesendet, kein Budget verbraucht", async () => {
+  const calls = [];
+  const graphql = async (q, v, o) => { calls.push({ q }); return q === IDENTITAET ? { shop: { myshopifyDomain: DOMAIN } } : { ok: true }; };
+  const audit = {
+    declared: () => {}, rejected: () => {}, result: () => {},
+    attempt: async () => { throw new Error("EACCES später"); }, // typische fs.promises-Schreibweise
+  };
+  const guard = createMutationGuard({ graphql, expectedDomain: DOMAIN, audit });
+  guard.declareMutations({ felder: ["productSet"], budget: 3, grund: "x" });
+  await assert.rejects(() => guard.graphql(M_PRODUCT_SET, {}), (e) => e.code === "log" && /SYNCHRON/.test(e.message));
+  assert.equal(writeCalls(calls).length, 0, "Write wurde trotz async attempt gesendet (fail-open)");
+  assert.equal(guard.state().zaehler, 0, "Budget wurde verbraucht, obwohl nichts gesendet wurde");
+});
+
+test("async result/declared/rejected, die rejecten, erreichen weder Aufrufer noch Prozess (keine unhandledRejection)", async () => {
+  const unhandled = [];
+  const handler = (r) => unhandled.push(r);
+  process.on("unhandledRejection", handler);
+  try {
+    const graphql = async (q) => (q === IDENTITAET ? { shop: { myshopifyDomain: DOMAIN } } : { ok: 1 });
+    const audit = {
+      attempt: () => {},
+      declared: async () => { throw new Error("declared async kaputt"); },
+      result: async () => { throw new Error("Platte voll NACH dem Send"); },
+      rejected: async () => { throw new Error("rejected async kaputt"); },
+    };
+    const guard = createMutationGuard({ graphql, expectedDomain: DOMAIN, audit });
+    guard.declareMutations({ felder: ["productSet"], budget: 3, grund: "x" });
+    const ergebnis = await guard.graphql(M_PRODUCT_SET, {});
+    assert.deepEqual(ergebnis, { ok: 1 });
+    await assert.rejects(() => guard.graphql(M_PUBLISH, {}), (e) => e.code === "deny"); // rejected async
+    await new Promise((r) => setImmediate(r)); // Microtasks abarbeiten lassen
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(unhandled, [], "async Audit-Rejection wurde zur unhandledRejection (Exit 1 nach Send)");
+  } finally {
+    process.off("unhandledRejection", handler);
+  }
+});

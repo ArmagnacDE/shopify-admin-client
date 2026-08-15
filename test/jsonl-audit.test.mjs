@@ -161,3 +161,19 @@ test("ts und Monatsdatei stammen aus DEMSELBEN Zeitpunkt (Codex P3-2, Monatswech
   assert.equal(log[0].zeile.ts, "2026-08-15T12:00:00.000Z");
   assert.equal(log[0].pfad, join("logs-test", "shopify-mutations-2026-08.jsonl"));
 });
+
+test("werfender transformVariables: attempt wirft mit klarer Ursache (nicht „Log nicht schreibbar“)", () => {
+  const { audit } = bauAudit({ transformVariables: (v) => { delete v.input.customer.email; return v; } });
+  // Anderer Variablen-Shape als vom Transform angenommen → TypeError im Transform.
+  assert.throws(
+    () => audit.attempt({ store: "a.myshopify.com", id: "1", feld: "productSet", nr: 1, variablen: { input: {} } }),
+    /transformVariables hat geworfen/
+  );
+});
+
+test("kuerzeFuerLog: Date/Buffer werden wie im Transport (toJSON) geloggt, nicht als {}", () => {
+  const d = new Date("2026-08-15T22:00:00Z");
+  assert.equal(kuerzeFuerLog(d), "2026-08-15T22:00:00.000Z");
+  assert.deepEqual(kuerzeFuerLog({ when: d }), { when: "2026-08-15T22:00:00.000Z" });
+  assert.equal(kuerzeFuerLog(Buffer.from("ab")).type, "Buffer");
+});

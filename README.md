@@ -53,8 +53,13 @@ festnageln wollen), bindet die **Store-Registry** Namen an Handles. Der Endpoint
 Stores ist eine **Code-Konstante** (`expectedDomain`), die zugleich API-Host **und**
 Allowlist ist. Aus der Umgebung liest die Registry **nur** `<PREFIX>_CLIENT_ID` und
 `<PREFIX>_CLIENT_SECRET` — **kein `<PREFIX>_STORE`**. Damit kann kein Env-Wert den
-Ziel-Host verschieben; eine vertauschte `.env` scheitert am Token-Tausch (401), bevor
-irgendein Request mit Seiteneffekt läuft.
+Ziel-Host verschieben: Der Write geht **immer** an die Code-Konstante. Sind je Shop
+**eigene** Custom Apps installiert (der Normalfall), scheitert eine vertauschte `.env`
+schon am Token-Tausch (401), bevor irgendein Request mit Seiteneffekt läuft. Ist
+**dieselbe** App in mehreren Shops installiert, gelingt der Token-Tausch auch mit den
+Credentials des anderen Shops — der Request landet trotzdem am richtigen Host, aber
+mit den Rechten der anderen Installation. Getrennte Apps je Shop sind deshalb Teil des
+Sicherheitsmodells, nicht nur Ordnung.
 
 ```js
 import { createStoreRegistry } from "shopify-admin-client/registry";
@@ -110,7 +115,12 @@ erzwingt, dass die Absicht als exaktes Token im Code steht, BEVOR etwas wirkt.
   läuft VOR dem Send und **wirft** bei Schreibfehler (fail-closed → `MutationGuardError('log')`,
   kein Budget verbraucht); `declared/result/rejected` warnen selbst und werfen nie (nach
   erfolgreichem Send darf kein Audit-Fehler als „Write gescheitert" beim Aufrufer landen —
-  Dubletten-Schutz). Jeder Eintrag trägt `store: expectedDomain`.
+  Dubletten-Schutz). Jeder Eintrag trägt `store: expectedDomain`. **Synchron ist
+  Vertragspflicht, keine Empfehlung:** gibt `attempt` eine Promise zurück, lehnt der Guard
+  den Write mit `MutationGuardError('log')` ab (fail-closed — ein async-`attempt` hätte
+  beim Send noch nichts geschrieben); Promises aus `declared/result/rejected` werden
+  entschärft, damit keine unhandledRejection den Prozess nach einem erfolgreichen Send
+  mit Exit 1 beendet.
 - **Datenschutz:** `createJsonlAudit({ directory, transformVariables? })` — der
   Datenschutz-Transform ist lokale Firmen-Entscheidung und sieht **nur** `variablen` — als
   **tiefe Kopie** (`structuredClone`), ein in-place redigierender Transform verändert also
@@ -131,7 +141,7 @@ import { scanClientBoundary } from "shopify-admin-client";
 const befunde = scanClientBoundary({
   rootDirs: ["lib", "scripts"],
   allowClientIn: ["lib/shopify.js"],   // nur hier darf der Client importiert werden
-  ignore: ["scripts/spike/"],           // Pfadpräfixe komplett überspringen
+  ignore: ["scripts/spike"],            // Pfad-Segmente überspringen (nicht scripts/spike-x.js)
 });                                      // [] = sauber; sonst { file, line, rule, detail }
 ```
 
