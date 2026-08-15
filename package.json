@@ -1,19 +1,25 @@
 {
   "name": "shopify-admin-client",
-  "version": "1.1.0",
-  "description": "Schlanker, dependency-freier Shopify Admin GraphQL-Client (Client-Credentials-Grant, Token-Caching, Retry + Rate-Limit-Handling).",
+  "version": "1.2.0",
+  "description": "Schlanker, dependency-freier Shopify Admin GraphQL-Client (Client-Credentials-Grant, Token-Caching, Retry + Rate-Limit-Handling) mit Multi-Store-Registry und Live-Identitaetspruefung.",
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./registry": "./store-registry.js"
   },
   "files": [
     "index.js",
+    "transport.js",
+    "errors.js",
+    "identity.js",
+    "store-registry.js",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:install": "node scripts/test-install.mjs"
   },
   "engines": {
     "node": ">=18"
