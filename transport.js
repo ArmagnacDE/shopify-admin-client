@@ -18,7 +18,8 @@ const MAX_BACKOFF_MS = 60_000;     // Obergrenze fuer server-gesteuerte Wartezei
 // (kein zweiter Regex, keine Divergenz).
 export const STORE_RE = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i;
 // Erlaubte API-Version: JJJJ-MM oder "unstable" (kein beliebiges Pfadsegment).
-const VERSION_RE = /^(\d{4}-\d{2}|unstable)$/;
+// Exportiert, damit die Registry dieselbe Regel schon beim BAU anwendet (Kadenz v1.2.0).
+export const VERSION_RE = /^(\d{4}-\d{2}|unstable)$/;
 
 // Steuerzeichen/Zeilenumbrueche aus frei gesetzten Bezeichnern entfernen (Log-Injection)
 // und Laenge begrenzen — diese Werte landen in Fehlermeldungen/Logs.

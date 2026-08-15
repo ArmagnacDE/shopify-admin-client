@@ -80,9 +80,11 @@ verifyIdentity, config, state }`. `graphql` ist der **geguardete** Aufruf (Reads
 Writes vor dem ersten Send geprüft); `config = { store, version, endpoint, label }`.
 
 - **Lazy:** Struktur (Namen, Domains, Präfixe, `version`) wird **beim Bau** geprüft
-  (unbekannte Namen / doppelte Domains oder Präfixe / fehlende `version` werfen sofort);
-  Credentials werden erst bei `get(name)` gelesen (fehlend → klarer `Error`, **kein Netz**);
-  Token-Tausch erst beim ersten `graphql`.
+  (unbekannte Namen / doppelte Domains oder Präfixe / fehlende oder ungültige `version`
+  werfen sofort); Credentials werden erst bei `get(name)` gelesen (fehlend → klarer
+  `Error`, **kein Netz**); Token-Tausch erst beim ersten `graphql`. Die validierten Werte
+  liegen in einem **eingefrorenen Snapshot** — spätere Änderungen am übergebenen
+  `stores`-Objekt (Präfix umbiegen, Store nachschieben) haben keine Wirkung.
 - **`version` ist Pflicht je Store** — eine Code-Konstante wie die Domain. Ohne Pin fiele
   die API-Version still auf den Client-Default zurück.
 - **`get(name)` ist memoisiert** (ein Handle je Name und Registry-Instanz); ein
@@ -110,9 +112,10 @@ erzwingt, dass die Absicht als exaktes Token im Code steht, BEVOR etwas wirkt.
   erfolgreichem Send darf kein Audit-Fehler als „Write gescheitert" beim Aufrufer landen —
   Dubletten-Schutz). Jeder Eintrag trägt `store: expectedDomain`.
 - **Datenschutz:** `createJsonlAudit({ directory, transformVariables? })` — der
-  Datenschutz-Transform ist lokale Firmen-Entscheidung und sieht **nur** `variablen`; die
-  Feldkürzung (800 Zeichen, Tiefenlimit) darüber ist Default und läuft NACH dem Transform.
-  Das Log bleibt lokal und gitignored.
+  Datenschutz-Transform ist lokale Firmen-Entscheidung und sieht **nur** `variablen` — als
+  **tiefe Kopie** (`structuredClone`), ein in-place redigierender Transform verändert also
+  nie den echten Write; die Feldkürzung (800 Zeichen, Tiefenlimit) darüber ist Default und
+  läuft NACH dem Transform. Das Log bleibt lokal und gitignored.
 
 ```js
 import { createMutationGuard, extrahiereRootFeld, istSchreibDokument, validateDeclaration } from "shopify-admin-client/guard";
@@ -133,7 +136,12 @@ const befunde = scanClientBoundary({
 ```
 
 Meldet: Import von `shopify-admin-client` (statisch **und** dynamisch, alle Subpaths)
-außerhalb `allowClientIn`; Roh-`fetch` gegen `myshopify.com`; Nutzung von `clientFromEnv`.
+außerhalb `allowClientIn`; Roh-`fetch` mit statisch sichtbarem `myshopify.com`-Ziel
+(auch `fetch?.(…)`, `globalThis.fetch(…)`, `fetch(new URL("/…", "https://x.myshopify.com"))`);
+Nutzung von `clientFromEnv`. Ein nicht lesbares `rootDir` (Tippfehler, Rechte) **wirft**,
+statt still `[]` zu liefern — ein Meta-Test darf nicht aus Versehen grün sein. Der Scan ist
+ein Stolperdraht gegen versehentliches Vorbeischreiben, keine Sicherheitsgrenze (die ist die
+Credential-Trennung): aus Variablen zusammengesetzte Ziele erkennt er nicht.
 
 ## Identitätsprüfung (`verifyShopIdentity`)
 

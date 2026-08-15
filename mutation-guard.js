@@ -49,22 +49,33 @@ export function validateDeclaration({ felder, budget, grund } = {}) {
   }
 }
 
-// Strings ("...") und #-Kommentare aus einem GraphQL-Dokument entfernen — der leichte
-// Lexer, den die Write-Erkennung braucht: `query { p(q: "mutation") }` ist ein Read und
-// darf NICHT blockieren, während das Schlüsselwort außerhalb von Strings überall zählt.
+// Strings ("..."), Block-Strings ("""...""") und #-Kommentare aus einem GraphQL-Dokument
+// entfernen — der leichte Lexer, den die Write-Erkennung braucht: `query { p(q: "mutation") }`
+// ist ein Read und darf NICHT blockieren, während das Schlüsselwort außerhalb von Strings
+// überall zählt. Block-Strings sind ein EIGENER Zustand (Kadenz v1.2.0, Codex P1): als Folge
+// einfacher Anführungszeichen gelesen ließe `"""a"b"""` den Lexer im String-Zustand zurück,
+// der Rest des Dokuments (inkl. eines späteren `mutation`) fiele weg — Guard-Bypass per
+// fragment-first. Innerhalb eines Block-Strings zählt nur `\"""` als Escape.
 export function ohneStringsUndKommentare(doc) {
   let out = "";
   let inString = false;
+  let inBlock = false;
   let inKommentar = false;
   for (let i = 0; i < doc.length; i++) {
     const c = doc[i];
     if (inKommentar) { if (c === "\n") { inKommentar = false; out += c; } continue; }
+    if (inBlock) {
+      if (c === "\\" && doc.startsWith('"""', i + 1)) { i += 3; continue; }
+      if (doc.startsWith('"""', i)) { inBlock = false; i += 2; }
+      continue;
+    }
     if (inString) {
       if (c === "\\") { i++; continue; }
       if (c === '"') inString = false;
       continue;
     }
     if (c === "#") { inKommentar = true; continue; }
+    if (doc.startsWith('"""', i)) { inBlock = true; i += 2; continue; }
     if (c === '"') { inString = true; continue; }
     out += c;
   }
@@ -72,7 +83,15 @@ export function ohneStringsUndKommentare(doc) {
 }
 
 /** Write-Erkennung: `mutation` irgendwo AUSSERHALB von Strings/Kommentaren (fragment-first
- *  zählt, Suchbegriffe nicht). */
+ *  zählt, Suchbegriffe nicht).
+ *
+ *  BEWUSST NICHT UMGESETZT (Kadenz v1.2.0, Codex P1-2 → als P3 eingestuft): Eine Query, deren
+ *  Operationsname, Alias oder Enum-Wert wörtlich `mutation` lautet (`query mutation { … }`),
+ *  wird als Write eingestuft und scheitert dann laut mit `form` — nie still. Ein Tokenizer, der
+ *  nur den Operationstyp je Definition liest, wäre die Lösung, ist aber ein Parser durch die
+ *  Hintertür (Prämisse 11) und ändert die Klassifikation der migrierten armagnac-Fassung.
+ *  Wortlaut `mutation` als Bezeichner kommt in Shopify-Dokumenten praktisch nicht vor; die
+ *  Kosten sind ein klarer Fehlertext, das Umbenennen des Bezeichners behebt ihn. */
 export function istSchreibDokument(query) {
   return /\bmutation\b/.test(ohneStringsUndKommentare(String(query)));
 }

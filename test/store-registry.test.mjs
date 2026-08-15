@@ -303,3 +303,38 @@ test("nur eigene Schluessel (Object.hasOwn) — geerbte Keys zaehlen nicht als S
   const reg = createStoreRegistry({ stores, env: {}, auditForStore: auditNoop });
   assert.throws(() => reg.get("ererbt"), /unbekannt/);
 });
+
+// ---------------------------------------------------------------------------------
+// Kadenz v1.2.0 — Snapshot der validierten Konfiguration (Codex P1-3) + version-Regel
+// ---------------------------------------------------------------------------------
+
+test("Snapshot: nachtraegliche Mutation des stores-Objekts hat KEINE Wirkung (Credential-Trennung)", () => {
+  const stores = {
+    a: { expectedDomain: "shop-a.myshopify.com", envPrefix: "STORE_A", version: "2026-04" },
+    b: { expectedDomain: "shop-b.myshopify.com", envPrefix: "STORE_B", version: "2026-04" },
+  };
+  const env = { STORE_A_CLIENT_ID: "id-a", STORE_A_CLIENT_SECRET: "sec-a", STORE_B_CLIENT_ID: "id-b", STORE_B_CLIENT_SECRET: "sec-b" };
+  const gesehen = [];
+  const reg = createStoreRegistry({ stores, env, auditForStore: (name, cfg) => { gesehen.push({ name, cfg }); return auditNoop(); } });
+
+  // Angriff 1: Praefix von A auf B umbiegen -> A muesste B-Credentials bekommen.
+  stores.a.envPrefix = "STORE_B";
+  stores.a.expectedDomain = "shop-b.myshopify.com";
+  const a = reg.get("a");
+  assert.equal(a.config.store, "shop-a.myshopify.com", "Snapshot verletzt: get liest das mutierte Eingabeobjekt");
+  assert.equal(gesehen[0].cfg.envPrefix, "STORE_A", "auditForStore bekam die mutierte statt der validierten Konfiguration");
+  assert.ok(Object.isFrozen(gesehen[0].cfg), "Snapshot-Eintrag ist nicht eingefroren");
+
+  // Angriff 2: Store nachschieben (umgeht die Dubletten-Pruefung beim Bau).
+  stores.c = { expectedDomain: "shop-a.myshopify.com", envPrefix: "STORE_A", version: "2026-04" };
+  assert.throws(() => reg.get("c"), /unbekannt/);
+});
+
+test("version wird beim BAU gegen dieselbe Regel wie im Transport geprueft (JJJJ-MM | unstable)", () => {
+  const bau = (version) => () =>
+    createStoreRegistry({ stores: { a: { expectedDomain: "shop-a.myshopify.com", envPrefix: "STORE_A", version } }, env: {}, auditForStore: auditNoop });
+  assert.throws(bau("2026-99x"), /ungueltige version/);
+  assert.throws(bau("foo"), /ungueltige version/);
+  assert.doesNotThrow(bau("2026-04"));
+  assert.doesNotThrow(bau("unstable"));
+});

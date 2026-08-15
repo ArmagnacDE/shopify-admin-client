@@ -20,19 +20,31 @@ const CODE_RE = /\.(js|mjs|cjs)$/;
 const CLIENT_IMPORT_RE =
   /(?:from|import|require)\s*\(?\s*["'`]shopify-admin-client(?:\/[^"'`]*)?["'`]/;
 
-// Roh-fetch mit myshopify.com-Ziel (Literal-Form) — z. B. fetch("https://x.myshopify.com/…").
-const RAW_FETCH_RE = /\bfetch\s*\(\s*[`'"][^`'"]*myshopify\.com/;
+// Roh-fetch mit statisch sichtbarem myshopify.com-Ziel. Erkannt werden (Kadenz v1.2.0,
+// Codex P2-3) neben fetch("https://x.myshopify.com/…") auch fetch?.(…), globalThis.fetch(…)
+// und die new-URL-Form fetch(new URL("/admin/…", "https://x.myshopify.com")): innerhalb der
+// Argumentliste (bis zum nächsten `;`, `{` oder `}`) darf irgendein String-Literal das Ziel
+// tragen. Vertrag bleibt: Literal-Formen; ein aus Variablen zusammengesetztes Ziel ist
+// Vorsatz und außer Scope. Lieber ein seltener Falsch-Positiv als ein stilles Vorbei.
+const RAW_FETCH_RE =
+  /\bfetch\s*(?:\?\.)?\s*\([^;{}]*?[`'"][^`'"]*myshopify\.com/;
 
 // clientFromEnv als Bezeichner (Import oder Aufruf).
 const CLIENT_FROM_ENV_RE = /\bclientFromEnv\b/;
 
+// Fail-closed (Codex P2-2): ein nicht lesbares Verzeichnis WIRFT — ein Meta-Test, der bei
+// `rootDirs: ['script']` (Tippfehler) oder einem Rechteproblem still `[]` liefert, ist
+// grüner Schein statt Prüfung.
 function dateienUnter(dir) {
   const out = [];
   let eintraege;
   try {
     eintraege = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out; // fehlendes rootDir ist kein Fund, nur nichts zu scannen
+  } catch (err) {
+    throw new Error(
+      `scanClientBoundary: Verzeichnis "${dir}" nicht lesbar (${err?.code ?? err?.message ?? err}) — ` +
+        "rootDirs prüfen; ein fehlendes Verzeichnis ist kein sauberer Befund."
+    );
   }
   for (const e of eintraege) {
     const pfad = join(dir, e.name);

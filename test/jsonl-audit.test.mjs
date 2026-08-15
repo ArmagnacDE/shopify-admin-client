@@ -128,3 +128,36 @@ test("directory Pflicht; transformVariables muss Funktion sein", () => {
 test("kuerzeFuerLog: kurze Werte und Nicht-Strings unangetastet", () => {
   assert.deepEqual(kuerzeFuerLog({ a: "kurz", b: 7, c: [true, null] }), { a: "kurz", b: 7, c: [true, null] });
 });
+
+// --- Kadenz v1.2.0 -------------------------------------------------------------------
+test("transformVariables arbeitet auf einer KOPIE — der echte Write bleibt unverändert (Codex P2-1)", () => {
+  // In-place redigierender Transform, wie er in einem Firmen-Repo naheliegt.
+  const { audit, log } = bauAudit({
+    transformVariables: (v) => { delete v.input.customer.email; v.input.customer.name = "[redigiert]"; return v; },
+  });
+  const variablen = { input: { customer: { email: "k@example.com", name: "Kunde" }, note: "x" } };
+  audit.attempt({ store: "a.myshopify.com", id: "1", feld: "draftOrderCreate", nr: 1, variablen });
+  // Log ist redigiert …
+  assert.deepEqual(log[0].zeile.variablen, { input: { customer: { name: "[redigiert]" }, note: "x" } });
+  // … die Referenz, die der Guard danach an den Transport gibt, NICHT.
+  assert.deepEqual(variablen, { input: { customer: { email: "k@example.com", name: "Kunde" }, note: "x" } },
+    "Transform hat die echten Mutations-Variablen verändert");
+});
+
+test("nicht kopierbare variablen: Transform wird übersprungen, Eintrag markiert, kein Wurf", () => {
+  const { audit, log } = bauAudit({ transformVariables: () => { throw new Error("darf nicht laufen"); } });
+  const variablen = { fn: () => 1 }; // structuredClone kann keine Funktionen
+  assert.doesNotThrow(() => audit.attempt({ store: "a.myshopify.com", id: "1", feld: "x", nr: 1, variablen }));
+  assert.match(log[0].zeile.variablen, /nicht kopierbar/);
+});
+
+test("ts und Monatsdatei stammen aus DEMSELBEN Zeitpunkt (Codex P3-2, Monatswechsel)", () => {
+  // now() springt bei jedem Aufruf einen Monat weiter: zwei now()-Aufrufe je Eintrag
+  // würden August-ts in die September-Datei schreiben.
+  let n = 0;
+  const now = () => new Date(Date.UTC(2026, 7 + n++, 15, 12));
+  const { audit, log } = bauAudit({ now });
+  audit.attempt({ store: "a.myshopify.com", id: "1", feld: "x", nr: 1, variablen: {} });
+  assert.equal(log[0].zeile.ts, "2026-08-15T12:00:00.000Z");
+  assert.equal(log[0].pfad, join("logs-test", "shopify-mutations-2026-08.jsonl"));
+});

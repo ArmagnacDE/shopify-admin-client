@@ -280,3 +280,24 @@ test("Writes ohne Netz-Retry; explizites retryNetwork:true bleibt als Opt-in wir
   await guard.graphql(M_INV, {}, { retryNetwork: true });
   assert.equal(calls.find((c) => c.q === M_INV).o.retryNetwork, true, "bewusstes Opt-in wurde geschluckt");
 });
+
+// --- Kadenz v1.2.0 (Codex P1-1): Block-Strings dürfen den Lexer nicht im String-Zustand
+// zurücklassen — sonst fiele ein späteres `mutation` weg und ein fragment-first-Dokument
+// liefe als Read ungeguardet zum Transport.
+test("Block-String mit einzelnem Anführungszeichen: fragment-first bleibt Write und wird abgelehnt", async () => {
+  const { guard, calls } = bauGuard();
+  guard.declareMutations({ felder: ["tagsAdd"], budget: 5, grund: "x" });
+  const doc = 'fragment F on Mutation {\n  tagsAdd(id: $id, tags: ["""a"b"""]) { node { id } }\n}\nmutation M($id: ID!) { ...F }';
+  assert.equal(istSchreibDokument(doc), true, "Block-String hat das spätere `mutation` verschluckt");
+  await assert.rejects(() => guard.graphql(doc, { id: "gid://x" }), (e) => e.code === "form");
+  assert.equal(calls.length, 0, "Bypass: nicht-kanonisches Write-Dokument erreichte den Transport");
+});
+
+test("Block-String-Varianten im Lexer: Escape, verschachtelte Quotes, danach zählt `mutation` wieder", () => {
+  // \""" ist das einzige Escape im Block-String; danach ist das Dokument wieder „draußen".
+  assert.equal(istSchreibDokument('query { a(b: """x\\"""y""") { c } } mutation'), true);
+  assert.equal(istSchreibDokument('query { a(b: """ "mutation" """) { c } }'), false, "mutation IM Block-String ist Text");
+  assert.equal(istSchreibDokument('query { a(b: """"") { c } }'), false, "unabgeschlossener Block-String (ungültiges GraphQL, Server lehnt ab): Rest ist String-Inhalt");
+  // Eine echte Mutation mit Block-String-Argument bleibt Write (und scheitert dann an der Form-Regel).
+  assert.equal(istSchreibDokument('mutation { productUpdate(input: {descriptionHtml: """x"y"""}) { product { id } } }'), true);
+});

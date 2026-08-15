@@ -140,3 +140,31 @@ test("rootDirs Pflicht", () => {
   assert.throws(() => scanClientBoundary({ rootDirs: [] }), /rootDirs/);
   assert.throws(() => scanClientBoundary({}), /rootDirs/);
 });
+
+// --- Kadenz v1.2.0 -------------------------------------------------------------------
+test("fehlendes/nicht lesbares rootDir WIRFT statt still [] zu liefern (Codex P2-2, fail-closed)", (t) => {
+  const root = fixture({ "scripts/ok.js": "export const x = 1;\n" });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Tippfehler „script" statt „scripts": ein Meta-Test, der hier [] zurückgäbe, wäre grüner Schein.
+  assert.throws(
+    () => scanClientBoundary({ rootDirs: [join(root, "script")] }),
+    /nicht lesbar/
+  );
+  // Das korrekte Verzeichnis daneben bleibt scanbar.
+  assert.deepEqual(scanClientBoundary({ rootDirs: [join(root, "scripts")] }), []);
+});
+
+test("Roh-fetch-Formen: new URL(...), optional call, globalThis.fetch, mehrzeilig (Codex P2-3)", (t) => {
+  const root = fixture({
+    "scripts/url.js": 'await fetch(new URL("/admin/api/2026-04/graphql.json", "https://x.myshopify.com"), { method: "POST" });\n',
+    "scripts/opt.js": 'await fetch?.("https://x.myshopify.com/admin/api/graphql.json");\n',
+    "scripts/glob.js": "await globalThis.fetch(`https://${store}.myshopify.com/admin/api/graphql.json`);\n",
+    "scripts/multi.js": 'await fetch(\n  "https://x.myshopify.com/admin/api/graphql.json",\n  { method: "POST" }\n);\n',
+    // KEIN Fund: Ziel ist eine andere API, myshopify.com steht nur im Body-Objekt / danach.
+    "scripts/harmlos.js": 'await fetch("https://api.other.com/x", { body: "shop.myshopify.com" });\nconst s = "a.myshopify.com";\n',
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const befunde = scanClientBoundary({ rootDirs: [join(root, "scripts")] });
+  const dateien = befunde.filter((b) => b.rule === "raw-fetch").map((b) => b.file.split("/").pop()).sort();
+  assert.deepEqual(dateien, ["glob.js", "multi.js", "opt.js", "url.js"]);
+});

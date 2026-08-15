@@ -8,13 +8,19 @@
 // werden erst bei get(name) gelesen (fehlend -> Error, KEIN Netz); Token-Tausch und alles
 // Weitere erst beim ersten graphql-Aufruf des Handles.
 //
+// Snapshot (Kadenz v1.2.0, Codex P1-3): die beim Bau validierten Werte werden in eine
+// interne Map KOPIERT; get(name) liest ausschliesslich diesen Snapshot. Eine spaetere
+// Mutation des uebergebenen `stores`-Objekts (Praefix umbiegen, Store nachschieben) hat
+// keine Wirkung — sonst koennte Store A nach dem Bau die Credentials von B erhalten und
+// ein nachgeschobener Eintrag die Dubletten-Pruefung umgehen.
+//
 // get(name) legt je Store den Mutation-Guard vor den Transport: `handle.graphql` ist
 // `guard.graphql` (Writes geguardet, Reads direkt, kein Read-Preflight); die Audit-Instanz
 // kommt aus `auditForStore(name, storeCfg)` (genau einmal je Name). Deklaration, Budget und
 // Identitaets-Cache haengen je Guard-Instanz — ein Prozess kann B2C und B2B unabhaengig
 // beruehren.
 
-import { createShopifyClient, STORE_RE } from "./transport.js";
+import { createShopifyClient, STORE_RE, VERSION_RE } from "./transport.js";
 import { createMutationGuard } from "./mutation-guard.js";
 
 // Praefix wie eine Env-Variable: Grossbuchstabe zuerst, dann Grossbuchstaben/Ziffern/_.
@@ -57,6 +63,7 @@ export function createStoreRegistry({ stores, env = process.env, auditForStore, 
 
   const seenDomains = new Map(); // normalisierte Domain -> Store-Name
   const seenPrefixes = new Map(); // normalisiertes Praefix -> Store-Name
+  const snapshot = new Map(); // name -> eingefrorene, validierte Kopie (einzige Quelle fuer get)
 
   for (const name of names) {
     const cfg = stores[name];
@@ -88,6 +95,14 @@ export function createStoreRegistry({ stores, env = process.env, auditForStore, 
           "(Code-Konstante, z. B. \"2026-04\") — kein Rueckfall auf den Client-Default."
       );
     }
+    // Dieselbe Regel wie im Transport, aber schon beim BAU (sonst faellt "2026-99" erst
+    // beim ersten get() auf — Codex P3-1).
+    if (!VERSION_RE.test(version)) {
+      throw new Error(
+        `createStoreRegistry: Store "${name}" hat ungueltige version "${version}". ` +
+          "Erwartet JJJJ-MM (z. B. \"2026-04\") oder \"unstable\"."
+      );
+    }
 
     const normDomain = expectedDomain.toLowerCase();
     if (seenDomains.has(normDomain)) {
@@ -105,21 +120,32 @@ export function createStoreRegistry({ stores, env = process.env, auditForStore, 
       );
     }
     seenPrefixes.set(prefix, name);
+
+    // Validierte Werte kopieren und einfrieren — get() liest NUR den Snapshot. Flache Kopie
+    // inkl. etwaiger Zusatzfelder (die gehen unveraendert an auditForStore), aber die vier
+    // sicherheitsrelevanten Felder sind die hier geprueften Strings.
+    snapshot.set(name, Object.freeze({
+      ...cfg,
+      expectedDomain,
+      envPrefix: prefix,
+      version,
+      label: cfg.label ? String(cfg.label) : name,
+    }));
   }
 
   // --- Lazy get(name), memoisiert je Registry-Instanz --------------------------------
   const handles = new Map(); // name -> Handle (nur bei Erfolg gecacht)
 
   function get(name) {
-    if (!Object.hasOwn(stores, name)) {
+    if (!snapshot.has(name)) {
       throw new Error(
         `Store "${name}" ist unbekannt. Bekannte Stores: ${names.map((n) => `"${n}"`).join(", ")}.`
       );
     }
     if (handles.has(name)) return handles.get(name);
 
-    const cfg = stores[name];
-    const prefix = String(cfg.envPrefix).toUpperCase();
+    const cfg = snapshot.get(name); // NICHT stores[name] — das Eingabeobjekt ist veraenderlich
+    const prefix = cfg.envPrefix;
     const clientId = env[`${prefix}_CLIENT_ID`];
     const clientSecret = env[`${prefix}_CLIENT_SECRET`];
     if (!clientId || !clientSecret) {

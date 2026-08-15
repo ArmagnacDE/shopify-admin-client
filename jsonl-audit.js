@@ -63,29 +63,46 @@ export function createJsonlAudit({
 
   let verzeichnisBereit = false; // lazy: mkdir erst beim ersten Eintrag (kein fs beim Import)
 
-  const location = () => {
-    const d = now();
+  // Monatsdatei zu einem Zeitpunkt — ts und Dateiname eines Eintrags stammen aus DEMSELBEN
+  // Date (Codex P3-2: zwei now()-Aufrufe konnten am Monatswechsel auseinanderfallen).
+  const dateiFuer = (d) => {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     return join(directory, `shopify-mutations-${d.getFullYear()}-${mm}.jsonl`);
   };
+  const location = () => dateiFuer(now());
 
   // Baut den Eintrag (Transform auf variablen, dann Kürzung über den GESAMTEN Eintrag)
   // und schreibt ihn. Wirft bei Schreibfehler — der Aufrufer (safe/attempt) entscheidet.
   const schreibe = (typ, eintrag) => {
     const e = { ...eintrag };
     if (transformVariables && Object.hasOwn(e, "variablen")) {
-      e.variablen = transformVariables(e.variablen);
+      // Der Transform bekommt eine TIEFE KOPIE (Codex P2-1): `variablen` ist dieselbe
+      // Referenz, die der Guard danach an den Transport sendet — ein in-place redigierender
+      // Transform (`delete v.customer.email`) würde sonst den echten Write verändern.
+      // GraphQL-Variablen sind JSON; klappt structuredClone nicht (exotischer Wert), wird
+      // NICHT transformiert und der Eintrag traegt den Hinweis (fail-safe fuers Log,
+      // nie fuer den Write).
+      let kopie;
+      let kopierbar = true;
+      try {
+        kopie = structuredClone(e.variablen);
+      } catch (err) {
+        kopierbar = false;
+        e.variablen = `[variablen nicht kopierbar — Transform uebersprungen: ${err?.message ?? err}]`;
+      }
+      if (kopierbar) e.variablen = transformVariables(kopie);
     }
     // Kürzung über den GESAMTEN Eintrag (Default-Mechanik, NACH transformVariables).
     // Nebeneffekt: der Wrapper {ts,pid,typ,…} kostet die verschachtelten Werte eine
     // Tiefen-Ebene (effektiv TIEFE_MAX-1 für `variablen`) — bewusst in Kauf genommen;
     // echte GraphQL-Inputs liegen bei ~4–6 Ebenen, das Limit greift dort nie.
-    const voll = kuerzeFuerLog({ ts: now().toISOString(), pid, typ, ...e });
+    const jetzt = now();
+    const voll = kuerzeFuerLog({ ts: jetzt.toISOString(), pid, typ, ...e });
     if (!verzeichnisBereit) {
       mkdir(directory, { recursive: true });
       verzeichnisBereit = true;
     }
-    append(location(), `${JSON.stringify(voll)}\n`);
+    append(dateiFuer(jetzt), `${JSON.stringify(voll)}\n`);
   };
 
   // Nicht-fail-closed: Schreibfehler warnen, NIE werfen (declared/result/rejected).
