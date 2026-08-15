@@ -10,9 +10,9 @@
 // Dependency-frei, nicht interaktiv: nur node:child_process/fs/os/path.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -21,8 +21,18 @@ function run(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8" });
 }
 
+// npm ohne Shell starten: unter Windows ist `npm` eine Batch-Datei (`npm.cmd`), die
+// execFileSync ohne `shell:true` nicht findet — und `shell:true` konkateniert Argumente
+// unescaped (DEP0190). Stattdessen die npm-CLI mit DEM Node aufrufen, das dieses Skript
+// ausfuehrt: sie liegt bei jeder Standard-Installation neben der node-Binary.
+function npm(args, cwd) {
+  const npmCli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(npmCli)) return run(process.execPath, [npmCli, ...args], cwd);
+  return run("npm", args, cwd); // z. B. nvm/Volta-Layouts: PATH-npm (POSIX-Binary)
+}
+
 // 1. Tarball bauen und dessen Namen aus der npm-Ausgabe fischen.
-const packOut = run("npm", ["pack"], repoRoot);
+const packOut = npm(["pack"], repoRoot);
 const tarball = packOut
   .split("\n")
   .map((l) => l.trim())
@@ -51,7 +61,7 @@ try {
       2
     )
   );
-  run("npm", ["install", "--no-audit", "--no-fund", "--silent"], tmp);
+  npm(["install", "--no-audit", "--no-fund", "--silent"], tmp);
 
   // 3. Wurzel + alle veroeffentlichten Subpaths importieren und die Exporte pruefen.
   const probe = [

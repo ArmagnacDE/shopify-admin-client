@@ -4,9 +4,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { createJsonlAudit, kuerzeFuerLog } from "../jsonl-audit.js";
 
 const FIX = () => new Date("2026-08-15T22:00:00Z");
+// Plattformneutral (Windows liefert Backslashes): dieselbe join-Regel wie der Code.
+const MONATSDATEI = join("logs-test", "shopify-mutations-2026-08.jsonl");
 
 function bauAudit(extra = {}) {
   const log = [];
@@ -26,7 +29,7 @@ function bauAudit(extra = {}) {
 
 test("location() = Monatsdatei im Verzeichnis", () => {
   const { audit } = bauAudit();
-  assert.equal(audit.location(), "logs-test/shopify-mutations-2026-08.jsonl");
+  assert.equal(audit.location(), MONATSDATEI);
 });
 
 test("declared/attempt/result/rejected schreiben ts, pid, typ + Guard-Felder", () => {
@@ -41,7 +44,7 @@ test("declared/attempt/result/rejected schreiben ts, pid, typ + Guard-Felder", (
     assert.equal(l.zeile.ts, "2026-08-15T22:00:00.000Z");
     assert.equal(l.zeile.pid, 4711);
     assert.equal(l.zeile.store, "a.myshopify.com");
-    assert.equal(l.pfad, "logs-test/shopify-mutations-2026-08.jsonl");
+    assert.equal(l.pfad, MONATSDATEI);
   }
 });
 
