@@ -7,6 +7,8 @@
 // Registry (store-registry.js) reicht `fetch` bis hierher durch; der Barrel index.js
 // re-exportiert createShopifyClient/clientFromEnv/isMutation unveraendert.
 
+import { istSchreibDokument } from "./mutation-guard.js";
+
 const DEFAULT_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 const DEFAULT_TIMEOUT_MS = 30_000; // je Request; verhindert unbegrenzt haengende Laeufe
 const MAX_BACKOFF_MS = 60_000;     // Obergrenze fuer server-gesteuerte Wartezeiten
@@ -47,12 +49,12 @@ function defaultSleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Ist die GraphQL-Operation eine Mutation? Fuehrende Whitespaces + #-Kommentare
-// ueberspringen, dann auf das Schluesselwort pruefen. Mutations duerfen bei einem nach
-// dem Senden verlorenen Response NICHT blind wiederholt werden (Dubletten-Gefahr).
+// Ist die GraphQL-Operation eine Mutation? Gleiche Erkennung wie im Guard: `mutation` irgendwo
+// ausserhalb von Strings und Kommentaren, also auch nach einem vorangestellten Fragment.
+// Mutations duerfen bei einem nach dem Senden verlorenen Response NICHT blind wiederholt
+// werden (Dubletten-Gefahr). Im Zweifel gilt ein Dokument als Write, dann entfaellt nur der Retry.
 export function isMutation(query) {
-  const stripped = String(query).replace(/^\s*(?:#[^\n]*\n\s*)*/, "");
-  return /^mutation\b/.test(stripped);
+  return istSchreibDokument(query);
 }
 
 /**

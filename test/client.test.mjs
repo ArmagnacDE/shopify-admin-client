@@ -4,6 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createShopifyClient, isMutation } from "../index.js";
+import { createMutationGuard } from "../mutation-guard.js";
 
 const CREDS = { store: "shop.myshopify.com", clientId: "id", clientSecret: "sec" };
 const noSleep = async () => {};
@@ -128,11 +129,54 @@ test("Mutation wird bei 503 NICHT wiederholt (Ausfuehrung unklar)", async () => 
   assert.equal(counts.graphql, 1, "Mutation darf nur EINMAL gesendet werden");
 });
 
+const FRAGMENT_ZUERST = "fragment F on Product { id }\nmutation S($i: ProductSetInput!) {\n  productSet(input: $i) { product { ...F } }\n}";
+
+test("isMutation erkennt Mutation nach Fragment, Suchbegriff bleibt Read", () => {
+  assert.equal(isMutation(FRAGMENT_ZUERST), true);
+  assert.equal(isMutation('query { products(query: "mutation") { edges { cursor } } }'), false);
+});
+
+test("Mutation mit Fragment davor wird weder bei 503 noch bei Netzfehler wiederholt", async () => {
+  const bei503 = stubFetch({ graphql: () => resp({ ok: false, status: 503, statusText: "Service Unavailable" }) });
+  await assert.rejects(() => createShopifyClient({ ...CREDS, sleep: noSleep }).graphql(FRAGMENT_ZUERST), /HTTP 503/);
+  assert.equal(bei503.graphql, 1);
+  const beiNetz = stubFetch({ graphql: () => { throw new Error("ECONNRESET"); } });
+  await assert.rejects(() => createShopifyClient({ ...CREDS, sleep: noSleep }).graphql(FRAGMENT_ZUERST));
+  assert.equal(beiNetz.graphql, 1);
+});
+
+test("Token-Tausch wird bei HTTP 503 nicht wiederholt", async () => {
+  const counts = stubFetch({
+    token: () => resp({ ok: false, status: 503, statusText: "Service Unavailable" }),
+    graphql: () => resp({ body: { data: {} } }),
+  });
+  await assert.rejects(() => createShopifyClient({ ...CREDS, sleep: noSleep }).graphql("query { shop { name } }"), /Token-Tausch/);
+  assert.equal(counts.token, 1);
+  assert.equal(counts.graphql, 0);
+});
+
 test("retryNetwork:false verbietet auch den 503-Retry einer Query", async () => {
   const counts = stubFetch({ graphql: () => resp({ ok: false, status: 503, statusText: "Service Unavailable" }) });
   const c = createShopifyClient({ ...CREDS, sleep: noSleep });
   await assert.rejects(() => c.graphql("query { shop { name } }", {}, { retryNetwork: false }), /HTTP 503/);
   assert.equal(counts.graphql, 1);
+});
+
+test("Guard plus Transport: deklarierter Write geht bei 502/503/504 genau einmal raus", async () => {
+  for (const status of [502, 503, 504]) {
+    const domain = "shop.myshopify.com";
+    const counts = stubFetch({
+      graphql: (_n, options) => (JSON.parse(options.body).query.startsWith("mutation")
+        ? resp({ ok: false, status, statusText: "Gateway" })
+        : resp({ body: { data: { shop: { myshopifyDomain: domain } } } })),
+    });
+    const c = createShopifyClient({ ...CREDS, sleep: noSleep });
+    const audit = { declared() {}, attempt() {}, result() {}, rejected() {} };
+    const g = createMutationGuard({ graphql: c.graphql, expectedDomain: domain, audit });
+    g.declareMutations({ felder: ["productCreate"], budget: 1, grund: "Test" });
+    await assert.rejects(() => g.graphql("mutation { productCreate { id } }"), new RegExp(`HTTP ${status}`));
+    assert.equal(counts.graphql, 2, "1 Identitaets-Read + 1 Write");
+  }
 });
 
 test("HTTP 500 und 401 werden nicht wiederholt", async () => {

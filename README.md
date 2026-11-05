@@ -186,7 +186,8 @@ hält die gecachte Single-Flight-Promise.
   verlorener Response einen doppelten Schreibvorgang auslösen. HTTP 502/503/504 gelten
   genauso (Backoff 2 s, 4 s, 8 s), weil bei einer Mutation unklar ist, ob sie ausgeführt
   wurde. 429/THROTTLED werden für beide wiederholt (der Request wurde serverseitig nicht
-  ausgeführt). Override je Aufruf:
+  ausgeführt). Als Mutation gilt jedes Dokument mit `mutation` außerhalb von Strings und
+  Kommentaren, auch nach einem vorangestellten Fragment. Override je Aufruf:
 
   ```js
   await shop.graphql(mutation, vars, { retryNetwork: true });  // erzwingt Retry
