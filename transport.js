@@ -14,6 +14,9 @@ const DEFAULT_TIMEOUT_MS = 30_000; // je Request; verhindert unbegrenzt haengend
 const MAX_BACKOFF_MS = 60_000;     // Obergrenze fuer server-gesteuerte Wartezeiten
 // Voruebergehende Gateway-Fehler der Plattform: 502/503/504. Wie ein Netzfehler behandelt, also
 // fuer Reads wiederholt, fuer Mutations nur bei explizitem Opt-in (Ausfuehrung unklar).
+// BEWUSST NICHT UMGESETZT (Cross-Review v1.2.1): 5xx-Retry beim Token-Tausch (die Vorfaelle
+// trafen laut Log nur GraphQL), Retry-After bei 503, Gesamtbudget ueber Netz- und Gateway-Retry
+// (im Mischfall mehr Sendungen je Read, nur bei Reads und Opt-in-Writes, selten).
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
 
 // Erlaubte Store-Domain: <handle>.myshopify.com. Ohne diese Pruefung koennte ein
