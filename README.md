@@ -183,8 +183,10 @@ hält die gecachte Single-Flight-Promise.
   POST-Body, nie in URLs. Fremde Fehler-Bodies werden gekürzt übernommen.
 - **Retry-Semantik & Dubletten-Schutz:** Netz-Retry (bei _geworfenen_ Fehlern) ist für
   **Reads standardmäßig an, für Mutations aus** — sonst könnte ein nach dem Senden
-  verlorener Response einen doppelten Schreibvorgang auslösen. 429/THROTTLED werden für
-  beide wiederholt (der Request wurde serverseitig nicht ausgeführt). Override je Aufruf:
+  verlorener Response einen doppelten Schreibvorgang auslösen. HTTP 502/503/504 gelten
+  genauso (Backoff 2 s, 4 s, 8 s), weil bei einer Mutation unklar ist, ob sie ausgeführt
+  wurde. 429/THROTTLED werden für beide wiederholt (der Request wurde serverseitig nicht
+  ausgeführt). Override je Aufruf:
 
   ```js
   await shop.graphql(mutation, vars, { retryNetwork: true });  // erzwingt Retry

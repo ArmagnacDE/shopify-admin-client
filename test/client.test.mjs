@@ -97,6 +97,53 @@ test("Mutation-Retry bei 429 ist erlaubt (Request wurde nicht ausgefuehrt)", asy
   assert.equal(counts.graphql, 2);
 });
 
+for (const status of [502, 503, 504]) {
+  test(`Query wird bei HTTP ${status} wiederholt und liefert danach Daten`, async () => {
+    const counts = stubFetch({
+      graphql: (n) => (n === 1
+        ? resp({ ok: false, status, statusText: "Gateway", body: "<html>Fehler</html>" })
+        : resp({ body: { data: { ok: true } } })),
+    });
+    const waits = [];
+    const c = createShopifyClient({ ...CREDS, sleep: async (ms) => { waits.push(ms); } });
+    assert.deepEqual(await c.graphql("query { shop { name } }"), { ok: true });
+    assert.equal(counts.graphql, 2);
+    assert.deepEqual(waits, [2000]);
+  });
+}
+
+test("Query gibt bei dauerhaftem 503 nach 3 Retries auf und nennt den Status", async () => {
+  const counts = stubFetch({ graphql: () => resp({ ok: false, status: 503, statusText: "Service Unavailable", body: "weg" }) });
+  const waits = [];
+  const c = createShopifyClient({ ...CREDS, sleep: async (ms) => { waits.push(ms); } });
+  await assert.rejects(() => c.graphql("query { shop { name } }"), /HTTP 503/);
+  assert.equal(counts.graphql, 4, "1 Versuch + 3 Retries");
+  assert.deepEqual(waits, [2000, 4000, 8000]);
+});
+
+test("Mutation wird bei 503 NICHT wiederholt (Ausfuehrung unklar)", async () => {
+  const counts = stubFetch({ graphql: () => resp({ ok: false, status: 503, statusText: "Service Unavailable" }) });
+  const c = createShopifyClient({ ...CREDS, sleep: noSleep });
+  await assert.rejects(() => c.graphql("mutation { productCreate { id } }"), /HTTP 503/);
+  assert.equal(counts.graphql, 1, "Mutation darf nur EINMAL gesendet werden");
+});
+
+test("retryNetwork:false verbietet auch den 503-Retry einer Query", async () => {
+  const counts = stubFetch({ graphql: () => resp({ ok: false, status: 503, statusText: "Service Unavailable" }) });
+  const c = createShopifyClient({ ...CREDS, sleep: noSleep });
+  await assert.rejects(() => c.graphql("query { shop { name } }", {}, { retryNetwork: false }), /HTTP 503/);
+  assert.equal(counts.graphql, 1);
+});
+
+test("HTTP 500 und 401 werden nicht wiederholt", async () => {
+  for (const status of [500, 401]) {
+    const counts = stubFetch({ graphql: () => resp({ ok: false, status, statusText: "Nein" }) });
+    const c = createShopifyClient({ ...CREDS, sleep: noSleep });
+    await assert.rejects(() => c.graphql("query { shop { name } }"), new RegExp(`HTTP ${status}`));
+    assert.equal(counts.graphql, 1);
+  }
+});
+
 test("leeres errors:[] wird NICHT als Throttling gedeutet → data zurueck", async () => {
   const counts = stubFetch({ graphql: () => resp({ body: { data: { a: 1 }, errors: [] } }) });
   const c = createShopifyClient({ ...CREDS, sleep: noSleep });
