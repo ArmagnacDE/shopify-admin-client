@@ -10,6 +10,9 @@
 const DEFAULT_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 const DEFAULT_TIMEOUT_MS = 30_000; // je Request; verhindert unbegrenzt haengende Laeufe
 const MAX_BACKOFF_MS = 60_000;     // Obergrenze fuer server-gesteuerte Wartezeiten
+// Voruebergehende Gateway-Fehler der Plattform: 502/503/504. Wie ein Netzfehler behandelt, also
+// fuer Reads wiederholt, fuer Mutations nur bei explizitem Opt-in (Ausfuehrung unklar).
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
 
 // Erlaubte Store-Domain: <handle>.myshopify.com. Ohne diese Pruefung koennte ein
 // manipulierter store-Wert (z. B. "evil.com", "shop.myshopify.com@evil.com",
@@ -188,6 +191,7 @@ export function createShopifyClient({
     const MAX_RETRIES = 5;
     // Netz-Retry: fuer Reads erlaubt, fuer Mutations nur bei explizitem Opt-in.
     const networkRetries = (retryNetwork ?? !isMutation(query)) ? 3 : 0;
+    let gatewayRetries = 0;
 
     for (let attempt = 0; ; attempt++) {
       // 429/THROTTLED bedeuten: der Request wurde serverseitig NICHT ausgefuehrt
@@ -210,6 +214,14 @@ export function createShopifyClient({
         const retryAfter = parseFloat(res.headers.get("Retry-After"));
         const wait = Math.min((Number.isFinite(retryAfter) ? retryAfter : 2) * 1000, MAX_BACKOFF_MS);
         await sleep(wait);
+        continue;
+      }
+
+      // Voruebergehender Gateway-Fehler: gleiche Regel und gleiches Backoff wie beim Netz-Retry.
+      if (RETRYABLE_STATUS.has(res.status) && gatewayRetries < networkRetries) {
+        await res.text().catch(() => {}); // Body leeren, Verbindung freigeben
+        await sleep(Math.min(2000 * 2 ** gatewayRetries, MAX_BACKOFF_MS)); // 2s, 4s, 8s
+        gatewayRetries += 1;
         continue;
       }
 
